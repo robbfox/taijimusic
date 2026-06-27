@@ -1427,7 +1427,7 @@ class PromptDj extends LitElement {
   );
   private outputNode: GainNode = this.audioContext.createGain();
   private nextStartTime = 0;
-  private readonly bufferTime = 2; // adds an audio buffer in case of netowrk latency
+  private readonly bufferTime = 4.0; // adds a generous audio buffer to enable seamless reconnection during session timeouts
   @state() private playbackState: PlaybackState = 'stopped';
   @property({type: Object})
   private filteredPrompts = new Set<string>();
@@ -1657,14 +1657,19 @@ class PromptDj extends LitElement {
 
   private async handleConnectionFailure(reason: string) {
     const wasPlaying = this.playbackState === 'playing' || this.playbackState === 'loading';
-    this.stopAudio();
 
     if (wasPlaying) {
+      // Clean up the old session connection without calling stopAudio(), which would mute Web Audio and reset nextStartTime
+      try {
+        this.session?.stop();
+      } catch (err) {
+        console.error('Error stopping old session:', err);
+      }
+
       if (this.reconnectAttempts < this.maxReconnectAttempts) {
-        this.playbackState = 'loading';
         this.reconnectAttempts++;
         const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 10000);
-        this.toastMessage.show(`${reason} Reconnecting automatically in ${(delay / 1000).toFixed(0)}s (Attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+        this.toastMessage.show(`${reason} Reconnecting seamlessly in ${(delay / 1000).toFixed(0)}s (Attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
         
         if (this.reconnectTimeoutId) {
           clearTimeout(this.reconnectTimeoutId);
@@ -1672,23 +1677,29 @@ class PromptDj extends LitElement {
         
         this.reconnectTimeoutId = setTimeout(async () => {
           try {
-            console.log('Attempting automatic reconnection...');
+            console.log('Attempting automatic seamless reconnection...');
             await this.connectToSession();
             await this.setSessionPrompts();
-            this.loadAudio();
-            this.toastMessage.show('Reconnected successfully! Resuming Tai Chi flow.');
+            
+            // Resume streaming on the new session. We do NOT call loadAudio()
+            // because loadAudio() resets nextStartTime to 0 and resets the gain node.
+            this.audioContext.resume();
+            this.session.play();
+            
+            this.toastMessage.show('Reconnected successfully! Tai Chi flow resumed seamlessly.');
           } catch (err: any) {
-            console.error('Reconnection attempt failed:', err);
+            console.error('Seamless reconnection attempt failed:', err);
             this.handleConnectionFailure('Reconnection failed.');
           }
         }, delay);
       } else {
         this.reconnectAttempts = 0;
         this.reconnectTimeoutId = null;
-        this.playbackState = 'stopped';
+        this.stopAudio(); // Out of attempts, fully stop and reset
         this.toastMessage.show('Unable to reconnect automatically after multiple attempts. Please click Play to restart.');
       }
     } else {
+      this.stopAudio();
       this.toastMessage.show(`${reason} Please click Play to start.`);
     }
   }
