@@ -1,0 +1,9 @@
+{
+  "name": "Tai Chi Flow DJ",
+  "description": "Steer a continuous stream of meditative Tai Chi music with text prompts",
+  "requestFramePermissions": [],
+  "prompt": "",
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
