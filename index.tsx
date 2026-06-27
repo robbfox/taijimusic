@@ -1422,6 +1422,9 @@ class PromptDj extends LitElement {
   @property({type: Object})
   private filteredPrompts = new Set<string>();
   private connectionError = true;
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 5;
+  private reconnectTimeoutId: any = null;
 
   @query('play-pause-button') private playPauseButton!: PlayPauseButton;
   @query('toast-message') private toastMessage!: ToastMessage;
@@ -1448,6 +1451,7 @@ class PromptDj extends LitElement {
           console.log(e);
           if (e.setupComplete) {
             this.connectionError = false;
+            this.reconnectAttempts = 0; // Reset reconnection counter on success
           }
           if (e.filteredPrompt) {
             this.filteredPrompts = new Set([
@@ -1492,17 +1496,53 @@ class PromptDj extends LitElement {
         onerror: (e: ErrorEvent) => {
           console.log('Error occurred: %s\n', JSON.stringify(e));
           this.connectionError = true;
-          this.stopAudio();
-          this.toastMessage.show('Connection error, please restart audio.');
+          this.handleConnectionFailure('Connection error.');
         },
         onclose: (e: CloseEvent) => {
           console.log('Connection closed.');
           this.connectionError = true;
-          this.stopAudio();
-          this.toastMessage.show('Connection error, please restart audio.');
+          this.handleConnectionFailure('Connection timed out.');
         },
       },
     });
+  }
+
+  private async handleConnectionFailure(reason: string) {
+    const wasPlaying = this.playbackState === 'playing' || this.playbackState === 'loading';
+    this.stopAudio();
+
+    if (wasPlaying) {
+      if (this.reconnectAttempts < this.maxReconnectAttempts) {
+        this.playbackState = 'loading';
+        this.reconnectAttempts++;
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 10000);
+        this.toastMessage.show(`${reason} Reconnecting automatically in ${(delay / 1000).toFixed(0)}s (Attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+        
+        if (this.reconnectTimeoutId) {
+          clearTimeout(this.reconnectTimeoutId);
+        }
+        
+        this.reconnectTimeoutId = setTimeout(async () => {
+          try {
+            console.log('Attempting automatic reconnection...');
+            await this.connectToSession();
+            await this.setSessionPrompts();
+            this.loadAudio();
+            this.toastMessage.show('Reconnected successfully! Resuming Tai Chi flow.');
+          } catch (err: any) {
+            console.error('Reconnection attempt failed:', err);
+            this.handleConnectionFailure('Reconnection failed.');
+          }
+        }, delay);
+      } else {
+        this.reconnectAttempts = 0;
+        this.reconnectTimeoutId = null;
+        this.playbackState = 'stopped';
+        this.toastMessage.show('Unable to reconnect automatically after multiple attempts. Please click Play to restart.');
+      }
+    } else {
+      this.toastMessage.show(`${reason} Please click Play to start.`);
+    }
   }
 
   private setSessionPrompts = throttle(async () => {
@@ -1578,6 +1618,12 @@ class PromptDj extends LitElement {
   }
 
   private async handlePlayPause() {
+    if (this.reconnectTimeoutId) {
+      clearTimeout(this.reconnectTimeoutId);
+      this.reconnectTimeoutId = null;
+    }
+    this.reconnectAttempts = 0;
+
     if (this.playbackState === 'playing') {
       this.pauseAudio();
     } else if (
@@ -1596,6 +1642,12 @@ class PromptDj extends LitElement {
   }
 
   private pauseAudio() {
+    if (this.reconnectTimeoutId) {
+      clearTimeout(this.reconnectTimeoutId);
+      this.reconnectTimeoutId = null;
+    }
+    this.reconnectAttempts = 0;
+
     this.session.pause();
     this.playbackState = 'paused';
     this.outputNode.gain.setValueAtTime(1, this.audioContext.currentTime);
@@ -1711,6 +1763,12 @@ class PromptDj extends LitElement {
   );
 
   private async handleReset() {
+    if (this.reconnectTimeoutId) {
+      clearTimeout(this.reconnectTimeoutId);
+      this.reconnectTimeoutId = null;
+    }
+    this.reconnectAttempts = 0;
+
     if (this.connectionError) {
       await this.connectToSession();
       this.setSessionPrompts();
