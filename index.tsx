@@ -1265,6 +1265,16 @@ class PromptDj extends LitElement {
       width: 100%;
       z-index: -1;
       background: #111;
+      overflow: hidden;
+    }
+    #ambient-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      opacity: 0.85;
     }
     .app-header {
       display: flex;
@@ -1425,6 +1435,9 @@ class PromptDj extends LitElement {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectTimeoutId: any = null;
+  private particles: any[] = [];
+  private animationFrameId: any = null;
+  private ambientResizeObserver: ResizeObserver | null = null;
 
   @query('play-pause-button') private playPauseButton!: PlayPauseButton;
   @query('toast-message') private toastMessage!: ToastMessage;
@@ -1437,9 +1450,144 @@ class PromptDj extends LitElement {
     this.outputNode.connect(this.audioContext.destination);
   }
 
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this.animationFrameId) {
+      cancelAnimationFrame(this.animationFrameId);
+    }
+    if (this.ambientResizeObserver) {
+      this.ambientResizeObserver.disconnect();
+    }
+  }
+
   override async firstUpdated() {
     await this.connectToSession();
     this.setSessionPrompts();
+    this.setupAmbientAnimation();
+  }
+
+  private setupAmbientAnimation() {
+    const canvas = this.renderRoot.querySelector<HTMLCanvasElement>('#ambient-canvas');
+    const container = this.renderRoot.querySelector<HTMLElement>('#background');
+    if (!canvas || !container) return;
+
+    let resizeTimeout: any = null;
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const {width, height} = entry.contentRect;
+        if (resizeTimeout) clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(() => {
+          canvas.width = width;
+          canvas.height = height;
+          this.initAmbientParticles(width, height);
+        }, 150);
+      }
+    });
+
+    resizeObserver.observe(container);
+    this.ambientResizeObserver = resizeObserver;
+
+    const rect = container.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+    this.initAmbientParticles(rect.width, rect.height);
+    this.startAmbientAnimation(canvas);
+  }
+
+  private getActiveColors(): string[] {
+    const active = [...this.prompts.values()]
+      .filter((p) => p.weight > 0)
+      .map((p) => p.color);
+    return active.length > 0 ? active : ['#80cbc4', '#ffe082', '#a5d6a7', '#b39ddb'];
+  }
+
+  private initAmbientParticles(width: number, height: number) {
+    this.particles = [];
+    const count = 35; // Perfect zen density
+    const colors = this.getActiveColors();
+    for (let i = 0; i < count; i++) {
+      this.particles.push(this.createParticle(width, height, colors));
+    }
+  }
+
+  private createParticle(width: number, height: number, colors: string[], atBottom = false): any {
+    const color = colors[Math.floor(Math.random() * colors.length)];
+    return {
+      x: Math.random() * width,
+      y: atBottom ? height + 20 : Math.random() * height,
+      vx: (Math.random() - 0.5) * 0.15, // Extremely slow drift
+      vy: -(0.08 + Math.random() * 0.18), // Slow rise
+      baseRadius: 15 + Math.random() * 35, // Soothing large bubbles
+      radius: 0,
+      color,
+      alpha: 0.04 + Math.random() * 0.08, // Very transparent
+      pulsePhase: Math.random() * Math.PI * 2,
+      pulseSpeed: 0.003 + Math.random() * 0.007, // Very slow breathing pulse
+      swayPhase: Math.random() * Math.PI * 2,
+      swaySpeed: 0.001 + Math.random() * 0.004, // Smooth swaying
+    };
+  }
+
+  private startAmbientAnimation(canvas: HTMLCanvasElement) {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const renderLoop = () => {
+      const width = canvas.width;
+      const height = canvas.height;
+      if (width === 0 || height === 0) {
+        this.animationFrameId = requestAnimationFrame(renderLoop);
+        return;
+      }
+
+      ctx.clearRect(0, 0, width, height);
+
+      const colors = this.getActiveColors();
+
+      this.particles.forEach((p, idx) => {
+        p.pulsePhase += p.pulseSpeed;
+        p.swayPhase += p.swaySpeed;
+
+        const pulse = Math.sin(p.pulsePhase) * 0.15 + 1.0;
+        p.radius = p.baseRadius * pulse;
+
+        p.y += p.vy;
+        p.x += p.vx + Math.sin(p.swayPhase) * 0.2;
+
+        if (p.y < -p.radius || p.x < -p.radius || p.x > width + p.radius) {
+          this.particles[idx] = this.createParticle(width, height, colors, true);
+          return;
+        }
+
+        ctx.beginPath();
+        const radGrad = ctx.createRadialGradient(
+          p.x,
+          p.y,
+          0,
+          p.x,
+          p.y,
+          p.radius,
+        );
+
+        const hex = p.color;
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+
+        radGrad.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${p.alpha})`);
+        radGrad.addColorStop(0.5, `rgba(${r}, ${g}, ${b}, ${p.alpha * 0.3})`);
+        radGrad.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+
+        ctx.fillStyle = radGrad;
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      this.animationFrameId = requestAnimationFrame(renderLoop);
+    };
+
+    this.animationFrameId = requestAnimationFrame(renderLoop);
   }
 
   private async connectToSession() {
@@ -1788,7 +1936,9 @@ class PromptDj extends LitElement {
     });
     const yinYangSpinning = this.playbackState === 'playing' ? 'spinning' : '';
 
-    return html`<div id="background" style=${bg}></div>
+    return html`<div id="background" style=${bg}>
+        <canvas id="ambient-canvas"></canvas>
+      </div>
       <header class="app-header" id="app-header">
         <div class="yinyang-icon-container" id="yinyang-container">
           <svg class="yinyang-icon ${yinYangSpinning}" viewBox="0 0 100 100" id="yinyang-svg">
